@@ -105,14 +105,16 @@ export class DiscordController {
       return;
     }
 
-    const thinking = await thread.send("Thinking…");
+    await thread.sendTyping();
     try {
       const response = await this.agent.respond(thread.id, context, request);
       for (const chunk of splitForDiscord(response)) {
         await thread.send(chunk);
       }
     } catch (error: unknown) {
-      await thinking.edit("I couldn't complete that response. Please try again.");
+      await thread.send(
+        `I couldn't complete that response. Please try again.\nError: ${error}`,
+      );
       throw error;
     }
   }
@@ -130,10 +132,7 @@ export class DiscordController {
     console.log(`Discord catch-up scan complete (${guildCount} guilds)`);
   }
 
-  private async catchUpGuild(
-    guild: Guild,
-    cutoff: number,
-  ): Promise<void> {
+  private async catchUpGuild(guild: Guild, cutoff: number): Promise<void> {
     const channels = await guild.channels.fetch();
     const messageChannels = new Map<string, HistoryChannel>();
     const threadParents: ThreadParent[] = [];
@@ -175,7 +174,10 @@ export class DiscordController {
       try {
         await this.considerMessage(message, cutoff);
       } catch (error: unknown) {
-        console.error(`Failed to process Discord message ${message.id}:`, error);
+        console.error(
+          `Failed to process Discord message ${message.id}:`,
+          error,
+        );
       }
     }
   }
@@ -219,6 +221,20 @@ export class DiscordController {
   }
 
   private async ensureThread(message: Message): Promise<ThreadChannel> {
+    if (message.hasThread) {
+      const thread =
+        message.thread ??
+        ("threads" in message.channel
+          ? await message.channel.threads.fetch(message.id).catch(() => null)
+          : null);
+      if (thread) {
+        if (thread.archived) {
+          await thread.setArchived(false);
+        }
+        return thread;
+      }
+    }
+
     if (message.channel.isThread()) {
       if (message.channel.archived) {
         await message.channel.setArchived(
@@ -229,7 +245,9 @@ export class DiscordController {
       return message.channel;
     }
     if (!message.channel.isTextBased()) {
-      throw new Error("Grookie mentions must be sent in a text channel or thread");
+      throw new Error(
+        "Grookie mentions must be sent in a text channel or thread",
+      );
     }
 
     const title = removeGrookieMention(
@@ -277,9 +295,7 @@ function isHistoryChannel(
   return Boolean(channel?.isTextBased() && "messages" in channel);
 }
 
-function isThreadParent(
-  channel: GuildBasedChannel,
-): channel is ThreadParent {
+function isThreadParent(channel: GuildBasedChannel): channel is ThreadParent {
   return (
     channel instanceof TextChannel ||
     channel instanceof NewsChannel ||
