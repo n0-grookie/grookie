@@ -4,8 +4,6 @@ export interface Config {
   discordToken: string;
   allowedRoleIds: Set<string>;
   statePath: string;
-  contextMessageLimit: number;
-  contextCharacterLimit: number;
   model: string;
 }
 
@@ -34,24 +32,11 @@ function requiredIdSet(name: string): Set<string> {
   return values;
 }
 
-function positiveInteger(name: string, fallback: number): number {
-  const value = process.env[name];
-  if (value === undefined) return fallback;
-
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
-    throw new Error(`${name} must be a positive integer`);
-  }
-  return parsed;
-}
-
 export function loadConfig(): Config {
   return {
     discordToken: required("DISCORD_TOKEN"),
     allowedRoleIds: requiredIdSet("GROOKIE_ALLOWED_ROLE_IDS"),
     statePath: resolve(process.env.GROOKIE_STATE_PATH ?? "state/grookie.json"),
-    contextMessageLimit: positiveInteger("GROOKIE_CONTEXT_MESSAGES", 30),
-    contextCharacterLimit: positiveInteger("GROOKIE_CONTEXT_CHARACTERS", 12_000),
     model: required("GROOKIE_MODEL"),
   };
 }

@@ -4,13 +4,13 @@ Grookie is a small Discord controller for a local Letta agent running on the com
 
 The v1 behavior is intentionally narrow:
 
-- Grookie only handles explicit `@Grookie` mentions.
+- Grookie handles explicit `@Grookie` mentions and later messages in threads where it is a member.
 - A Discord thread maps to one persistent Letta conversation.
 - Mentions from members with an allowed Discord role create a thread automatically in any guild text channel.
-- Recent qualifying mentions are scanned for up to 30 minutes after startup or reconnect; live and recovered messages use the same handler.
-- Each response leaves a `Thinking…` status message and posts the final answer as a separate message.
-- Each turn includes a bounded recent snapshot of the Discord thread.
-- The agent has no web, shell, filesystem, or company-action tools.
+- Recent qualifying messages are scanned for up to 30 minutes after startup or reconnect; live and recovered messages use the same handler.
+- Assistant message blocks stream into the thread, with a typing indicator only while assistant text is being generated.
+- Each Discord message is sent once to the persistent thread conversation with its send time and display name; replies include a small reference prefix.
+- The agent has local shell/filesystem and memory tools; web and company-action tools remain deferred.
 
 ## Local development
 
@@ -53,8 +53,8 @@ npm run mock-model
 It listens on `http://127.0.0.1:8080/v1`, exposes `grookie-mock` from `/v1/models`, and supports
 streaming and non-streaming `/v1/chat/completions` responses. Set `MOCK_MODEL_RESPONSE` to choose
 the reply text. Set `MOCK_MODEL_SCENARIO=tool-call` to emit a deterministic `mock_action` function
-call when the request advertises tools; this is for separate tool-protocol tests because Grookie
-v1 deliberately has no tools. Configure the local Letta model provider to use this endpoint and set
+call when the request advertises tools; this is for separate tool-protocol tests. Configure the
+local Letta model provider to use this endpoint and set
 `GROOKIE_MODEL=grookie-mock`; the mock is bound to localhost and is intended only for development.
 
 The Discord bot needs the `Message Content Intent` and permissions to read message history, send

@@ -3,6 +3,7 @@ import { dirname } from "node:path";
 
 interface StateFile {
   agentId?: string;
+  agentPromptVersion?: number;
   conversations: Record<string, string>;
   processedMessages?: Record<string, number>;
 }
@@ -33,6 +34,18 @@ export class StateStore {
 
   public setAgentId(agentId: string): void {
     this.state.agentId = agentId;
+  }
+
+  public get agentPromptVersion(): number | undefined {
+    return this.state.agentPromptVersion;
+  }
+
+  public setAgentPromptVersion(version: number): void {
+    this.state.agentPromptVersion = version;
+  }
+
+  public resetConversations(): void {
+    this.state.conversations = {};
   }
 
   public conversationId(threadId: string): string | undefined {
@@ -81,6 +94,14 @@ function isStateFile(value: unknown): value is StateFile {
   if (typeof value !== "object" || value === null) return false;
   const record = value as Record<string, unknown>;
   if (record.agentId !== undefined && typeof record.agentId !== "string") {
+    return false;
+  }
+  if (
+    record.agentPromptVersion !== undefined &&
+    (typeof record.agentPromptVersion !== "number" ||
+      !Number.isSafeInteger(record.agentPromptVersion) ||
+      record.agentPromptVersion <= 0)
+  ) {
     return false;
   }
   if (typeof record.conversations !== "object" || record.conversations === null) {

@@ -16,11 +16,12 @@ import {
 
 import type { Config } from "./config.js";
 import {
-  limitContext,
+  formatReplyPrefix,
+  formatTimestamp,
   removeGrookieMention,
   type ContextMessage,
 } from "./context.js";
-import { GrookieAgent } from "./agent.js";
+import { GrookieAgent, type AgentEventHandler } from "./agent.js";
 import { StateStore } from "./store.js";
 
 const DISCORD_MESSAGE_LIMIT = 2_000;
@@ -62,7 +63,7 @@ export class DiscordController {
     message: Message,
     cutoff = Date.now() - MESSAGE_WINDOW_MS,
   ): Promise<void> {
-    if (!isCandidateMessage(message, this.client.user, cutoff)) return;
+    if (!(await isCandidateMessage(message, this.client.user, cutoff))) return;
     if (
       this.processingMessageIds.has(message.id) ||
       this.store.hasProcessedMessage(message.id)
@@ -85,32 +86,22 @@ export class DiscordController {
     if (!this.client.user) throw new Error("Discord client is not ready");
 
     const thread = await this.ensureThread(message);
-    const recentMessages = await thread.messages.fetch({
-      limit: this.config.contextMessageLimit,
-    });
-    const context = limitContext(
-      [...recentMessages.values()]
-        .sort((left, right) => left.createdTimestamp - right.createdTimestamp)
-        .map(toContextMessage),
-      this.config.contextMessageLimit,
-      this.config.contextCharacterLimit,
-    );
-    const request = {
-      ...toContextMessage(message),
-      content: removeGrookieMention(message.content, this.client.user.id),
-    };
+    const request = await toTurnMessage(message, this.client.user.id);
 
-    if (!request.content) {
+    if (!removeGrookieMention(message.content, this.client.user.id)) {
       await thread.send("What would you like me to help with?");
       return;
     }
 
-    await thread.sendTyping();
+    const turn = new DiscordTurn(thread);
     try {
-      const response = await this.agent.respond(thread.id, context, request);
-      for (const chunk of splitForDiscord(response)) {
-        await thread.send(chunk);
-      }
+      await this.agent.respond(thread.id, request, turn.handle, {
+        leaveThread: async () => {
+          await thread.leave();
+          turn.markLeft();
+        },
+      });
+      await turn.finish();
     } catch (error: unknown) {
       await thread.send(
         `I couldn't complete that response. Please try again.\nError: ${error}`,
@@ -231,18 +222,21 @@ export class DiscordController {
         if (thread.archived) {
           await thread.setArchived(false);
         }
+        if (!thread.members.me) await thread.join();
         return thread;
       }
     }
 
     if (message.channel.isThread()) {
+      const thread = message.channel;
       if (message.channel.archived) {
         await message.channel.setArchived(
           false,
           "Respond to a recent Grookie mention",
         );
       }
-      return message.channel;
+      if (!thread.members.me) await thread.join();
+      return thread;
     }
     if (!message.channel.isTextBased()) {
       throw new Error(
@@ -262,31 +256,160 @@ export class DiscordController {
   }
 }
 
+class DiscordTurn {
+  private readonly typing: TypingHeartbeat;
+  private assistantKey: string | undefined;
+  private assistantText = "";
+  private emittedAssistant = false;
+  private left = false;
+
+  public constructor(private readonly thread: ThreadChannel) {
+    this.typing = new TypingHeartbeat(thread);
+  }
+
+  public readonly handle: AgentEventHandler = async (event) => {
+    if (this.left) return;
+
+    if (event.type === "assistant") {
+      const key = event.otid ?? event.uuid;
+      if (this.assistantKey !== undefined && this.assistantKey !== key) {
+        await this.flushAssistant();
+      }
+      this.assistantKey = key;
+      this.emittedAssistant = true;
+      await this.typing.start();
+      this.assistantText += event.content;
+      return;
+    }
+
+    if (
+      event.type === "reasoning" ||
+      event.type === "tool_call" ||
+      event.type === "tool_result" ||
+      event.type === "result"
+    ) {
+      await this.flushAssistant();
+      this.typing.stop();
+    }
+
+    if (event.type === "result" && !event.success) {
+      throw new Error(event.errorDetail ?? event.error ?? "Letta turn failed");
+    }
+
+    if (event.type === "result" && !this.emittedAssistant && event.result) {
+      await this.sendMessage(event.result);
+    }
+  };
+
+  public async finish(): Promise<void> {
+    await this.flushAssistant();
+    this.typing.stop();
+  }
+
+  public markLeft(): void {
+    this.left = true;
+    this.typing.stop();
+  }
+
+  private async flushAssistant(): Promise<void> {
+    if (!this.assistantText) return;
+    const text = this.assistantText;
+    this.assistantText = "";
+    this.assistantKey = undefined;
+    this.typing.stop();
+    await this.sendMessage(text);
+  }
+
+  private async sendMessage(text: string): Promise<void> {
+    for (const chunk of splitForDiscord(text)) {
+      await this.thread.send(chunk);
+    }
+  }
+}
+
+class TypingHeartbeat {
+  private timer: ReturnType<typeof setInterval> | undefined;
+  private active = false;
+
+  public constructor(private readonly thread: ThreadChannel) {}
+
+  public async start(): Promise<void> {
+    if (this.active) return;
+    this.active = true;
+    await this.thread.sendTyping();
+    this.timer = setInterval(() => {
+      void this.thread.sendTyping().catch((error: unknown) => {
+        console.error(`Failed to refresh typing in thread ${this.thread.id}:`, error);
+      });
+    }, 5_000);
+  }
+
+  public stop(): void {
+    if (!this.timer) {
+      this.active = false;
+      return;
+    }
+    clearInterval(this.timer);
+    this.timer = undefined;
+    this.active = false;
+  }
+}
+
 function toContextMessage(message: Message): ContextMessage {
   return {
     id: message.id,
     authorId: message.author.id,
     authorName: message.member?.displayName ?? message.author.displayName,
-    timestamp: new Date(message.createdTimestamp).toISOString(),
+    timestamp: formatTimestamp(message.createdTimestamp),
     content: message.content,
   };
+}
+
+async function toTurnMessage(
+  message: Message,
+  botId: string,
+): Promise<ContextMessage> {
+  const request = toContextMessage(message);
+  const content = removeGrookieMention(message.content, botId);
+  if (!content) return { ...request, content };
+
+  const reference = message.reference?.messageId
+    ? await message.fetchReference().catch(() => null)
+    : null;
+  if (!reference) return { ...request, content };
+
+  const authorName =
+    reference.member?.displayName ?? reference.author.displayName;
+  const prefix = formatReplyPrefix(
+    authorName,
+    formatTimestamp(reference.createdTimestamp),
+  );
+  return { ...request, content: `${prefix}\n${content}` };
 }
 
 type HistoryChannel = TextChannel | NewsChannel | AnyThreadChannel;
 type ThreadParent = TextChannel | NewsChannel | ForumChannel | MediaChannel;
 
-function isCandidateMessage(
+async function isCandidateMessage(
   message: Message,
   clientUser: Client["user"],
   cutoff: number,
-): boolean {
-  return (
-    message.author.bot === false &&
-    message.guild !== null &&
-    clientUser !== null &&
-    message.createdTimestamp >= cutoff &&
-    message.mentions.users.has(clientUser.id)
-  );
+): Promise<boolean> {
+  if (
+    message.author.bot ||
+    message.guild === null ||
+    clientUser === null ||
+    message.createdTimestamp < cutoff
+  ) {
+    return false;
+  }
+  if (message.mentions.users.has(clientUser.id)) return true;
+  if (!message.channel.isThread()) return false;
+
+  const member =
+    message.channel.members.me ??
+    (await message.channel.members.fetchMe().catch(() => null));
+  return member !== null;
 }
 
 function isHistoryChannel(

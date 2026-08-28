@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  formatReplyPrefix,
   formatTurn,
-  limitContext,
   removeGrookieMention,
   type ContextMessage,
 } from "./context.js";
@@ -12,7 +12,7 @@ const message = (id: string, content: string): ContextMessage => ({
   id,
   authorId: `user-${id}`,
   authorName: `User ${id}`,
-  timestamp: "2026-08-28T08:00:00.000Z",
+  timestamp: "2026-08-28 08:00 UTC",
   content,
 });
 
@@ -23,21 +23,13 @@ test("removes both Discord mention forms", () => {
   );
 });
 
-test("formats quoted context separately from the current request", () => {
-  const result = formatTurn([message("1", "hello")], message("2", "help"));
-  assert.match(result, /<discord-context>/);
-  assert.match(result, /User 1/);
-  assert.match(result, /Current request from User 2/);
+test("formats a turn without repeating thread context", () => {
+  assert.equal(formatTurn(message("2", "help")), "[2026-08-28 08:00 UTC] User 2: help");
 });
 
-test("limits context from the newest messages backwards", () => {
-  const result = limitContext(
-    [message("1", "one"), message("2", "two"), message("3", "three")],
-    2,
-    10_000,
-  );
-  assert.deepEqual(
-    result.map((item) => item.id),
-    ["2", "3"],
+test("formats a reply prefix", () => {
+  assert.equal(
+    formatReplyPrefix("Philipp", "2026-08-28 08:00 UTC"),
+    "(responding to Philipp's message at 2026-08-28 08:00 UTC)",
   );
 });
