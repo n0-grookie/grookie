@@ -5,7 +5,7 @@ import {
   type SDKMessage,
 } from "@letta-ai/letta-agent-sdk";
 
-import type { Config } from "./config.js";
+import type { Config, ReasoningEffort } from "./config.js";
 import { formatTurn, type ContextMessage } from "./context.js";
 import { StateStore } from "./store.js";
 
@@ -109,6 +109,10 @@ export class GrookieAgent {
           if (!threadSession) throw new Error("Thread session is not ready");
           await threadSession.leaveCurrentThread();
         }),
+        createReasoningEffortTool(async (effort) => {
+          if (!threadSession) throw new Error("Thread session is not ready");
+          await threadSession.setReasoningEffort(effort);
+        }),
       ],
     };
 
@@ -116,17 +120,42 @@ export class GrookieAgent {
       ? this.client.resumeSession(conversationId, sessionOptions)
       : this.client.createSession(this.agentId, sessionOptions);
     try {
+      const existingConversationId = conversationId;
       if (!conversationId) {
         conversationId = (await session.bootstrapState()).conversationId;
       }
+      const existingSettings = existingConversationId
+        ? (await this.client.conversations.retrieve(existingConversationId))
+            .model_settings
+        : undefined;
+      if (
+        !existingConversationId ||
+        !hasReasoningEffort(existingSettings)
+      ) {
+        await this.setReasoningEffort(conversationId, this.config.reasoningEffort);
+      }
       this.store.setConversationId(threadId, conversationId);
       await this.store.save();
-      threadSession = new ThreadSession(session);
+      threadSession = new ThreadSession(session, (effort) =>
+        this.setReasoningEffort(conversationId!, effort),
+      );
       return threadSession;
     } catch (error) {
       session.close();
       throw error;
     }
+  }
+
+  private async setReasoningEffort(
+    conversationId: string,
+    effort: ReasoningEffort,
+  ): Promise<void> {
+    await this.client.conversations.update(conversationId, {
+      modelSettings: {
+        provider_type: "openai",
+        reasoning: { reasoning_effort: effort },
+      },
+    });
   }
 }
 
@@ -164,6 +193,61 @@ function createLeaveThreadTool(leaveThread: () => Promise<void>): AnyAgentTool {
   };
 }
 
+function createReasoningEffortTool(
+  setReasoningEffort: (effort: ReasoningEffort) => Promise<void>,
+): AnyAgentTool {
+  return {
+    label: "Set reasoning effort",
+    name: "set_reasoning_effort",
+    description:
+      "Change the reasoning effort for subsequent work. Use medium or xhigh only when the task needs deeper analysis; low is the fast default.",
+    parameters: {
+      type: "object",
+      properties: {
+        effort: {
+          type: "string",
+          enum: ["low", "medium", "xhigh"],
+          description: "The Qwen reasoning effort to use.",
+        },
+      },
+      required: ["effort"],
+      additionalProperties: false,
+    },
+    execute: async (_toolCallId, input) => {
+      const effort = (input as { effort?: unknown }).effort;
+      if (!isReasoningEffort(effort)) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: "Invalid reasoning effort. Use low, medium, or xhigh.",
+            },
+          ],
+          isError: true,
+        };
+      }
+      try {
+        await setReasoningEffort(effort);
+        return {
+          content: [
+            { type: "text", text: `Reasoning effort set to ${effort}.` },
+          ],
+        };
+      } catch (error: unknown) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Could not change reasoning effort: ${error}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+    },
+  };
+}
+
 interface PendingTurn {
   request: ContextMessage;
   onEvent: AgentEventHandler;
@@ -183,7 +267,12 @@ class ThreadSession {
   private persistedRequestIds = new Set<string>();
   private persistedRequestTexts: string[] = [];
 
-  public constructor(private readonly session: LettaCodeSession) {}
+  public constructor(
+    private readonly session: LettaCodeSession,
+    private readonly applyReasoningEffort: (
+      effort: ReasoningEffort,
+    ) => Promise<void>,
+  ) {}
 
   public async enqueue(
     request: ContextMessage,
@@ -277,6 +366,10 @@ class ThreadSession {
     await this.current.actions.leaveThread();
   }
 
+  public async setReasoningEffort(effort: ReasoningEffort): Promise<void> {
+    await this.applyReasoningEffort(effort);
+  }
+
   private async consume(): Promise<void> {
     try {
       while (true) {
@@ -313,6 +406,17 @@ class ThreadSession {
       this.consuming = undefined;
     }
   }
+}
+
+function isReasoningEffort(value: unknown): value is ReasoningEffort {
+  return value === "low" || value === "medium" || value === "xhigh";
+}
+
+function hasReasoningEffort(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const reasoning = (value as Record<string, unknown>).reasoning;
+  if (!reasoning || typeof reasoning !== "object") return false;
+  return typeof (reasoning as Record<string, unknown>).reasoning_effort === "string";
 }
 
 function unwrapMessage(value: unknown): Record<string, unknown> | undefined {

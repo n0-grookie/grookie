@@ -57,6 +57,9 @@ call when the request advertises tools; this is for separate tool-protocol tests
 local Letta model provider to use this endpoint and set
 `GROOKIE_MODEL=grookie-mock`; the mock is bound to localhost and is intended only for development.
 
+`GROOKIE_REASONING_EFFORT` defaults to `low`. Grookie can use its `set_reasoning_effort` tool to
+select `medium` or `xhigh` when a task needs deeper reasoning.
+
 The Discord bot needs the `Message Content Intent` and permissions to read message history, send
 messages, create public threads, and send messages in threads. Keep the Letta runtime local to
 Grookie; this controller does not expose it over the network.
