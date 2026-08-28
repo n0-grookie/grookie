@@ -24,7 +24,6 @@ import { GrookieAgent } from "./agent.js";
 import { StateStore } from "./store.js";
 
 const DISCORD_MESSAGE_LIMIT = 2_000;
-const MINIMUM_EDIT_INTERVAL_MS = 750;
 const MESSAGE_WINDOW_MS = 30 * 60 * 1_000;
 const MESSAGE_PAGE_SIZE = 100;
 
@@ -106,18 +105,14 @@ export class DiscordController {
       return;
     }
 
-    const reply = await thread.send("Thinking…");
-    const replyUpdater = new ReplyUpdater(reply, thread);
+    const thinking = await thread.send("Thinking…");
     try {
-      await this.agent.respond(
-        thread.id,
-        context,
-        request,
-        (text) => replyUpdater.update(text),
-      );
-      await replyUpdater.finish();
+      const response = await this.agent.respond(thread.id, context, request);
+      for (const chunk of splitForDiscord(response)) {
+        await thread.send(chunk);
+      }
     } catch (error: unknown) {
-      await reply.edit("I couldn't complete that response. Please try again.");
+      await thinking.edit("I couldn't complete that response. Please try again.");
       throw error;
     }
   }
@@ -237,8 +232,12 @@ export class DiscordController {
       throw new Error("Grookie mentions must be sent in a text channel or thread");
     }
 
+    const title = removeGrookieMention(
+      message.content,
+      this.client.user?.id ?? "",
+    ).replace(/\s+/g, " ");
     return message.startThread({
-      name: `Grookie: ${message.content.replace(/\s+/g, " ").slice(0, 70)}`,
+      name: `Grookie: ${title || "request"}`.slice(0, 100),
       autoArchiveDuration: 1440,
       reason: "Create a conversation thread for Grookie",
     });
@@ -338,41 +337,6 @@ async function fetchRecentMessages(
   return [...messages.values()].sort(
     (left, right) => left.createdTimestamp - right.createdTimestamp,
   );
-}
-
-class ReplyUpdater {
-  private latestText = "";
-  private lastEditAt = 0;
-
-  public constructor(
-    private readonly reply: Message,
-    private readonly thread: ThreadChannel,
-  ) {}
-
-  public async update(text: string): Promise<void> {
-    this.latestText = text;
-    if (Date.now() - this.lastEditAt < MINIMUM_EDIT_INTERVAL_MS) return;
-    await this.editPreview();
-  }
-
-  public async finish(): Promise<void> {
-    const chunks = splitForDiscord(this.latestText);
-    const [first, ...rest] = chunks;
-    if (!first) return;
-
-    await this.reply.edit(first);
-    for (const chunk of rest) {
-      await this.thread.send(chunk);
-    }
-  }
-
-  private async editPreview(): Promise<void> {
-    const [first] = splitForDiscord(this.latestText);
-    if (!first) return;
-
-    this.lastEditAt = Date.now();
-    await this.reply.edit(first);
-  }
 }
 
 function splitForDiscord(text: string): string[] {

@@ -8,6 +8,7 @@
   },
   "scripts": {
     "dev": "tsx src/main.ts",
+    "mock-model": "tsx src/mock-model.ts",
     "start": "node dist/main.js",
     "build": "tsc",
     "test": "tsx --test src/**/*.test.ts",

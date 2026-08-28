@@ -8,6 +8,7 @@ The v1 behavior is intentionally narrow:
 - A Discord thread maps to one persistent Letta conversation.
 - Mentions from members with an allowed Discord role create a thread automatically in any guild text channel.
 - Recent qualifying mentions are scanned for up to 30 minutes after startup or reconnect; live and recovered messages use the same handler.
+- Each response leaves a `Thinking…` status message and posts the final answer as a separate message.
 - Each turn includes a bounded recent snapshot of the Discord thread.
 - The agent has no web, shell, filesystem, or company-action tools.
 
@@ -41,6 +42,20 @@ cp .env.example .env
 # GROOKIE_MODEL=provider/model-id       # exact local Letta model handle
 npm run dev
 ```
+
+For Discord-only integration testing before the real model is ready, run the deterministic local
+OpenAI-compatible mock in another terminal:
+
+```sh
+npm run mock-model
+```
+
+It listens on `http://127.0.0.1:8080/v1`, exposes `grookie-mock` from `/v1/models`, and supports
+streaming and non-streaming `/v1/chat/completions` responses. Set `MOCK_MODEL_RESPONSE` to choose
+the reply text. Set `MOCK_MODEL_SCENARIO=tool-call` to emit a deterministic `mock_action` function
+call when the request advertises tools; this is for separate tool-protocol tests because Grookie
+v1 deliberately has no tools. Configure the local Letta model provider to use this endpoint and set
+`GROOKIE_MODEL=grookie-mock`; the mock is bound to localhost and is intended only for development.
 
 The Discord bot needs the `Message Content Intent` and permissions to read message history, send
 messages, create public threads, and send messages in threads. Keep the Letta runtime local to

@@ -15,7 +15,7 @@ const PERSONA = [
 
 export class GrookieAgent {
   private readonly client: LettaAgentClient;
-  private readonly turns = new Map<string, Promise<void>>();
+  private readonly turns = new Map<string, Promise<string>>();
   private agentId: string | undefined;
 
   public constructor(
@@ -45,17 +45,14 @@ export class GrookieAgent {
     threadId: string,
     messages: readonly ContextMessage[],
     request: ContextMessage,
-    onText: (text: string) => Promise<void>,
-  ): Promise<void> {
+  ): Promise<string> {
     const previous = this.turns.get(threadId) ?? Promise.resolve();
-    const turn = previous.then(() =>
-      this.respondNow(threadId, messages, request, onText),
-    );
-    const queued = turn.catch(() => undefined);
+    const turn = previous.then(() => this.respondNow(threadId, messages, request));
+    const queued = turn.catch(() => "");
     this.turns.set(threadId, queued);
 
     try {
-      await turn;
+      return await turn;
     } finally {
       if (this.turns.get(threadId) === queued) this.turns.delete(threadId);
     }
@@ -65,8 +62,7 @@ export class GrookieAgent {
     threadId: string,
     messages: readonly ContextMessage[],
     request: ContextMessage,
-    onText: (text: string) => Promise<void>,
-  ): Promise<void> {
+  ): Promise<string> {
     if (!this.agentId) throw new Error("Grookie agent is not initialized");
 
     let conversationId = this.store.conversationId(threadId);
@@ -88,12 +84,12 @@ export class GrookieAgent {
     for await (const event of session.stream()) {
       if (event.type === "assistant") {
         response += event.content;
-        await onText(response);
       }
     }
 
     if (!response.trim()) {
       throw new Error("Letta returned an empty response");
     }
+    return response;
   }
 }
