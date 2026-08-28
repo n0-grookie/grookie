@@ -70,6 +70,14 @@ export class GrookieAgent {
     return (await session).enqueue(request, onEvent, actions);
   }
 
+  public async hasPersistedRequest(
+    threadId: string,
+    request: ContextMessage,
+  ): Promise<boolean> {
+    if (!this.store.conversationId(threadId)) return false;
+    return (await this.getSession(threadId)).hasPersistedRequest(request);
+  }
+
   private getSession(threadId: string): Promise<ThreadSession> {
     const existing = this.sessions.get(threadId);
     if (existing) return existing;
@@ -171,6 +179,9 @@ class ThreadSession {
   private sending: Promise<void> = Promise.resolve();
   private closed = false;
   private onClosed: (() => void) | undefined;
+  private persistedHistoryLoaded = false;
+  private persistedRequestIds = new Set<string>();
+  private persistedRequestTexts: string[] = [];
 
   public constructor(private readonly session: LettaCodeSession) {}
 
@@ -202,6 +213,11 @@ class ThreadSession {
       throw error;
     }
 
+    if (this.persistedHistoryLoaded) {
+      this.persistedRequestIds.add(request.id);
+      this.persistedRequestTexts.push(formatTurn(request));
+    }
+
     if (!this.consuming) {
       this.consuming = this.consume();
     }
@@ -210,6 +226,50 @@ class ThreadSession {
 
   public setOnClosed(onClosed: () => void): void {
     this.onClosed = onClosed;
+  }
+
+  public async hasPersistedRequest(request: ContextMessage): Promise<boolean> {
+    if (!this.persistedHistoryLoaded) {
+      const requestIds = new Set<string>();
+      const requestTexts: string[] = [];
+      let before: string | undefined;
+      while (true) {
+        const history = await this.session.listMessages({
+          limit: 100,
+          ...(before ? { before } : {}),
+        });
+        for (const message of history.messages) {
+          const record = unwrapMessage(message);
+          if (record?.role !== "user") continue;
+          if (typeof record.otid === "string") {
+            requestIds.add(record.otid);
+          }
+          const text = messageText(record.content);
+          if (text) requestTexts.push(text);
+        }
+
+        const oldestId = unwrapMessage(history.messages.at(-1))?.id;
+        const nextBefore =
+          history.nextBefore ??
+          (history.messages.length >= 100 && typeof oldestId === "string"
+            ? oldestId
+            : undefined);
+        if (history.hasMore === false || !nextBefore || nextBefore === before) {
+          break;
+        }
+        before = nextBefore;
+      }
+      this.persistedRequestIds = requestIds;
+      this.persistedRequestTexts = requestTexts;
+      this.persistedHistoryLoaded = true;
+    }
+
+    return (
+      this.persistedRequestIds.has(request.id) ||
+      this.persistedRequestTexts.some((text) =>
+        text.includes(formatTurn(request)),
+      )
+    );
   }
 
   public async leaveCurrentThread(): Promise<void> {
@@ -253,4 +313,27 @@ class ThreadSession {
       this.consuming = undefined;
     }
   }
+}
+
+function unwrapMessage(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const record = value as Record<string, unknown>;
+  if (record.message && typeof record.message === "object") {
+    return record.message as Record<string, unknown>;
+  }
+  return record;
+}
+
+function messageText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => messageText(part))
+      .join("");
+  }
+  if (content && typeof content === "object") {
+    const text = (content as Record<string, unknown>).text;
+    return typeof text === "string" ? text : "";
+  }
+  return "";
 }

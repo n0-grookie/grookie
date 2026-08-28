@@ -25,7 +25,7 @@ import { GrookieAgent, type AgentEventHandler } from "./agent.js";
 import { StateStore } from "./store.js";
 
 const DISCORD_MESSAGE_LIMIT = 2_000;
-const MESSAGE_WINDOW_MS = 30 * 60 * 1_000;
+const MESSAGE_WINDOW_MS = 10 * 60 * 1_000;
 const MESSAGE_PAGE_SIZE = 100;
 
 export class DiscordController {
@@ -62,6 +62,7 @@ export class DiscordController {
   private async considerMessage(
     message: Message,
     cutoff = Date.now() - MESSAGE_WINDOW_MS,
+    catchUp = false,
   ): Promise<void> {
     if (!(await isCandidateMessage(message, this.client.user, cutoff))) return;
     if (
@@ -74,7 +75,7 @@ export class DiscordController {
     this.processingMessageIds.add(message.id);
     try {
       if (!(await hasAllowedRole(message, this.config))) return;
-      await this.respondToMessage(message);
+      await this.respondToMessage(message, catchUp);
       this.store.markMessageProcessed(message.id, message.createdTimestamp);
       await this.store.save();
     } finally {
@@ -82,7 +83,10 @@ export class DiscordController {
     }
   }
 
-  private async respondToMessage(message: Message): Promise<void> {
+  private async respondToMessage(
+    message: Message,
+    catchUp: boolean,
+  ): Promise<void> {
     if (!this.client.user) throw new Error("Discord client is not ready");
 
     const thread = await this.ensureThread(message);
@@ -90,6 +94,16 @@ export class DiscordController {
 
     if (!removeGrookieMention(message.content, this.client.user.id)) {
       await thread.send("What would you like me to help with?");
+      return;
+    }
+
+    if (
+      catchUp &&
+      (await this.agent.hasPersistedRequest(thread.id, request))
+    ) {
+      console.log(
+        `Skipping Discord message ${message.id}: already present in ${thread.id}`,
+      );
       return;
     }
 
@@ -163,7 +177,7 @@ export class DiscordController {
 
     for (const message of messages) {
       try {
-        await this.considerMessage(message, cutoff);
+        await this.considerMessage(message, cutoff, true);
       } catch (error: unknown) {
         console.error(
           `Failed to process Discord message ${message.id}:`,

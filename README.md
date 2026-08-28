@@ -7,7 +7,7 @@ The v1 behavior is intentionally narrow:
 - Grookie handles explicit `@Grookie` mentions and later messages in threads where it is a member.
 - A Discord thread maps to one persistent Letta conversation.
 - Mentions from members with an allowed Discord role create a thread automatically in any guild text channel.
-- Recent qualifying messages are scanned for up to 30 minutes after startup or reconnect; live and recovered messages use the same handler.
+- Recent qualifying messages are scanned for up to 10 minutes after startup or reconnect; catch-up skips messages already present in the Letta conversation.
 - Assistant message blocks stream into the thread, with a typing indicator only while assistant text is being generated.
 - Each Discord message is sent once to the persistent thread conversation with its send time and display name; replies include a small reference prefix.
 - The agent has local shell/filesystem and memory tools; web and company-action tools remain deferred.

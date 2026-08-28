@@ -28,3 +28,23 @@ test("persists and prunes processed message IDs", async () => {
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("persists prompt versions and can reset conversation mappings", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "grookie-store-"));
+  try {
+    const path = join(directory, "state.json");
+    const store = new StateStore(path);
+    await store.load();
+    store.setAgentPromptVersion(2);
+    store.setConversationId("thread", "conversation");
+    store.resetConversations();
+    await store.save();
+
+    const reloaded = new StateStore(path);
+    await reloaded.load();
+    assert.equal(reloaded.agentPromptVersion, 2);
+    assert.equal(reloaded.conversationId("thread"), undefined);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
