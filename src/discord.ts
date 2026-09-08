@@ -171,6 +171,10 @@ export class DiscordController {
     try {
       messages = await fetchRecentMessages(channel, cutoff);
     } catch (error: unknown) {
+      if (isMissingAccessError(error)) {
+        console.warn(`Skipping inaccessible Discord channel ${channel.id}`);
+        return;
+      }
       console.error(`Failed to fetch Discord channel ${channel.id}:`, error);
       return;
     }
@@ -202,6 +206,12 @@ export class DiscordController {
             ...(before ? { before } : {}),
           });
         } catch (error: unknown) {
+          if (isMissingAccessError(error)) {
+            console.warn(
+              `Skipping archived-thread catch-up for inaccessible channel ${parent.id}`,
+            );
+            return;
+          }
           console.error(
             `Failed to fetch ${type} archived threads for ${parent.id}:`,
             error,
@@ -438,6 +448,15 @@ function isThreadParent(channel: GuildBasedChannel): channel is ThreadParent {
     channel instanceof NewsChannel ||
     channel instanceof ForumChannel ||
     channel instanceof MediaChannel
+  );
+}
+
+function isMissingAccessError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === 50001
   );
 }
 
