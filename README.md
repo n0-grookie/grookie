@@ -67,6 +67,13 @@ Grookie; this controller does not expose it over the network.
 Thread and agent IDs are stored in `state/grookie.json`, which is deliberately gitignored. The
 state file is written with restrictive permissions and atomically replaced after updates.
 
+## Running it
+
+`npm run dev` is for working on the controller. On the Mac Studio both the model
+server and the bridge run as launchd jobs so they survive crashes and reboots -
+see [deploy/README.md](deploy/README.md) for install, status, and the
+build-gated restart with rollback.
+
 ## Deferred
 
 Web search/fetch will be added as controller-owned Letta SDK client tools with explicit request

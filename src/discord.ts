@@ -38,6 +38,12 @@ export class DiscordController {
   });
   private readonly processingMessageIds = new Set<string>();
   private readonly inaccessibleCatchUpChannels = new Set<string>();
+  /**
+   * Set once SIGTERM arrives. Catch-up is a long chain of REST calls, and every
+   * in-flight one fails with "Expected token to be set" the moment the gateway
+   * session is destroyed - without this flag a shutdown spews hundreds of those.
+   */
+  private closing = false;
 
   public constructor(
     private readonly config: Config,
@@ -60,11 +66,22 @@ export class DiscordController {
     await this.client.login(this.config.discordToken);
   }
 
+  /**
+   * Close the gateway session so SIGTERM does not leave the bot looking online.
+   * Order matters: the flag goes up first, so the catch-up scan that is probably
+   * still running stops issuing requests instead of erroring on a cleared token.
+   */
+  public async stop(): Promise<void> {
+    this.closing = true;
+    await this.client.destroy();
+  }
+
   private async considerMessage(
     message: Message,
     cutoff = Date.now() - MESSAGE_WINDOW_MS,
     catchUp = false,
   ): Promise<void> {
+    if (this.closing) return;
     if (!(await isCandidateMessage(message, this.client.user, cutoff))) return;
     if (
       this.processingMessageIds.has(message.id) ||
@@ -133,8 +150,13 @@ export class DiscordController {
 
     let guildCount = 0;
     for (const guild of this.client.guilds.cache.values()) {
+      if (this.closing) break;
       guildCount += 1;
       await this.catchUpGuild(guild, cutoff);
+    }
+    if (this.closing) {
+      console.log(`Discord catch-up scan interrupted by shutdown (${guildCount} guilds started)`);
+      return;
     }
     console.log(`Discord catch-up scan complete (${guildCount} guilds)`);
     if (this.inaccessibleCatchUpChannels.size > 0) {
@@ -163,9 +185,11 @@ export class DiscordController {
     }
 
     for (const channel of messageChannels.values()) {
+      if (this.closing) return;
       await this.scanChannel(channel, cutoff);
     }
     for (const parent of threadParents) {
+      if (this.closing) return;
       await this.scanArchivedThreads(parent, cutoff);
     }
   }
@@ -182,6 +206,7 @@ export class DiscordController {
         this.inaccessibleCatchUpChannels.add(channel.id);
         return;
       }
+      if (this.closing) return;
       console.error(`Failed to fetch Discord channel ${channel.id}:`, error);
       return;
     }
@@ -204,7 +229,7 @@ export class DiscordController {
   ): Promise<void> {
     for (const type of ["public", "private"] as const) {
       let before: Date | undefined;
-      while (true) {
+      while (!this.closing) {
         let page;
         try {
           page = await parent.threads.fetchArchived({
@@ -217,10 +242,12 @@ export class DiscordController {
             this.inaccessibleCatchUpChannels.add(parent.id);
             return;
           }
-          console.error(
-            `Failed to fetch ${type} archived threads for ${parent.id}:`,
-            error,
-          );
+          if (!this.closing) {
+            console.error(
+              `Failed to fetch ${type} archived threads for ${parent.id}:`,
+              error,
+            );
+          }
           break;
         }
 
