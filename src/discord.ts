@@ -37,6 +37,7 @@ export class DiscordController {
     ],
   });
   private readonly processingMessageIds = new Set<string>();
+  private readonly inaccessibleCatchUpChannels = new Set<string>();
 
   public constructor(
     private readonly config: Config,
@@ -126,6 +127,7 @@ export class DiscordController {
 
   private async catchUp(): Promise<void> {
     const cutoff = Date.now() - MESSAGE_WINDOW_MS;
+    this.inaccessibleCatchUpChannels.clear();
     this.store.pruneProcessedMessages(cutoff);
     await this.store.save();
 
@@ -135,6 +137,11 @@ export class DiscordController {
       await this.catchUpGuild(guild, cutoff);
     }
     console.log(`Discord catch-up scan complete (${guildCount} guilds)`);
+    if (this.inaccessibleCatchUpChannels.size > 0) {
+      console.warn(
+        `Skipped ${this.inaccessibleCatchUpChannels.size} inaccessible Discord channels during catch-up`,
+      );
+    }
   }
 
   private async catchUpGuild(guild: Guild, cutoff: number): Promise<void> {
@@ -172,7 +179,7 @@ export class DiscordController {
       messages = await fetchRecentMessages(channel, cutoff);
     } catch (error: unknown) {
       if (isMissingAccessError(error)) {
-        console.warn(`Skipping inaccessible Discord channel ${channel.id}`);
+        this.inaccessibleCatchUpChannels.add(channel.id);
         return;
       }
       console.error(`Failed to fetch Discord channel ${channel.id}:`, error);
@@ -207,9 +214,7 @@ export class DiscordController {
           });
         } catch (error: unknown) {
           if (isMissingAccessError(error)) {
-            console.warn(
-              `Skipping archived-thread catch-up for inaccessible channel ${parent.id}`,
-            );
+            this.inaccessibleCatchUpChannels.add(parent.id);
             return;
           }
           console.error(
