@@ -8,10 +8,16 @@ import {
   type Guild,
   type Message,
   MediaChannel,
+  MessageReaction,
   NewsChannel,
   TextChannel,
   type AnyThreadChannel,
+  type GuildMember,
+  type PartialMessageReaction,
+  type PartialUser,
+  type ThreadAutoArchiveDuration,
   type ThreadChannel,
+  type User,
 } from "discord.js";
 
 import type { Config } from "./config.js";
@@ -21,6 +27,14 @@ import {
   removeGrookieMention,
   type ContextMessage,
 } from "./context.js";
+import {
+  isLeadReaction,
+  leadPointer,
+  leadSeedTurn,
+  leadThreadName,
+  type LeadIntakeConfig,
+  type LeadSource,
+} from "./leads.js";
 import { GrookieAgent, type AgentEventHandler } from "./agent.js";
 import { StateStore } from "./store.js";
 
@@ -34,6 +48,9 @@ export class DiscordController {
       GatewayIntentBits.Guilds,
       GatewayIntentBits.GuildMessages,
       GatewayIntentBits.MessageContent,
+      // Only needed for the lead-flag reaction; it is not a privileged intent, and
+      // the event carries no message content, so the message is fetched by id.
+      GatewayIntentBits.GuildMessageReactions,
     ],
   });
   private readonly processingMessageIds = new Set<string>();
@@ -54,6 +71,12 @@ export class DiscordController {
   public async start(): Promise<void> {
     this.client.once(Events.ClientReady, (client) => {
       console.log(`Discord connected as ${client.user.tag}`);
+      const lead = this.config.leadIntake;
+      console.log(
+        lead
+          ? `Lead intake armed: ${lead.emoji} in channel ${lead.channelId}`
+          : "Lead intake disabled (set GROOKIE_LEAD_CHANNEL_ID to arm it)",
+      );
       void this.catchUp().catch((error: unknown) => {
         console.error("Failed to catch up recent Discord messages:", error);
       });
@@ -61,6 +84,11 @@ export class DiscordController {
     this.client.on(Events.MessageCreate, (message) => {
       void this.considerMessage(message).catch((error: unknown) => {
         console.error("Failed to handle Discord message:", error);
+      });
+    });
+    this.client.on(Events.MessageReactionAdd, (reaction, user) => {
+      void this.considerReaction(reaction, user).catch((error: unknown) => {
+        console.error("Failed to handle Discord reaction:", error);
       });
     });
     await this.client.login(this.config.discordToken);
@@ -125,6 +153,17 @@ export class DiscordController {
       return;
     }
 
+    await this.runTurn(thread, request);
+  }
+
+  /**
+   * One Grookie turn, streamed into `thread`. Both entry points end here: a message
+   * someone sent, and a lead-intake thread that only exists because of a reaction.
+   */
+  private async runTurn(
+    thread: ThreadChannel,
+    request: ContextMessage,
+  ): Promise<void> {
     const turn = new DiscordTurn(thread);
     try {
       await this.agent.respond(thread.id, request, turn.handle, {
@@ -140,6 +179,102 @@ export class DiscordController {
       );
       throw error;
     }
+  }
+
+  /**
+   * A 🤝 on a message means "this is a lead, write it down". The intake itself is a
+   * normal Grookie turn in a thread - the interview needs judgement, not a form - so
+   * this only decides where the thread goes and what it opens with.
+   *
+   * Reactions are not caught up on restart: unlike messages, a reaction we never saw
+   * leaves no trace in the message window, so a reaction during downtime is dropped.
+   */
+  private async considerReaction(
+    rawReaction: MessageReaction | PartialMessageReaction,
+    reactor: User | PartialUser,
+  ): Promise<void> {
+    const config = this.config.leadIntake;
+    if (this.closing || !config || !this.client.user) return;
+    // Cheapest checks first: most reactions in the guild are not lead flags, and none
+    // of these need a REST call - the emoji and the message id are on the partial.
+    if (reactor.bot) return;
+    if (!isLeadReaction(rawReaction.emoji.name, config)) return;
+    const messageId = rawReaction.message.id;
+    if (this.store.hasLeadIntake(messageId)) return;
+    if (this.processingMessageIds.has(`lead:${messageId}`)) return;
+
+    this.processingMessageIds.add(`lead:${messageId}`);
+    try {
+      // The gateway event carries no message content, so the flagged message is
+      // fetched by id: the intake has to quote it.
+      const message = await rawReaction.message.fetch();
+      if (message.author.bot || message.guild === null) return;
+
+      // Flagging a lead is a deliberate act, so it takes the same role the rest of
+      // Grookie's triggers do. Otherwise anyone who can react could open threads in
+      // #leads about any message they like.
+      const member = await message.guild.members
+        .fetch(reactor.id)
+        .catch(() => null);
+      if (!memberHasAllowedRole(member, this.config)) {
+        console.log(
+          `Ignoring lead-flag reaction on ${messageId} from ${reactor.id}: no allowed role`,
+        );
+        return;
+      }
+
+      await this.startLeadIntake(message, member.displayName, config);
+    } finally {
+      this.processingMessageIds.delete(`lead:${messageId}`);
+    }
+  }
+
+  private async startLeadIntake(
+    message: Message,
+    reactorName: string,
+    config: LeadIntakeConfig,
+  ): Promise<void> {
+    const source = leadSourceOf(message, reactorName);
+    // Discord threads branch from a message in their own channel, so a flag raised
+    // elsewhere is quoted into the leads channel first and threaded from the quote.
+    const anchor = isInChannel(message, config.channelId)
+      ? message
+      : await this.postLeadPointer(source, config);
+    const thread = await this.ensureThread(anchor, {
+      name: leadThreadName(source),
+      autoArchive: autoArchiveFor(anchor),
+    });
+    // Recorded before the turn runs: a thread that exists but whose first turn died is
+    // still a thread, and re-reacting should not open a second one.
+    this.store.markLeadIntake(message.id, thread.id);
+    await this.store.save();
+    // The turn has to carry its own context: a thread Grookie just opened starts blank,
+    // with none of the channel it came from in it.
+    await this.runTurn(thread, {
+      id: `lead-intake:${message.id}`,
+      authorId: this.client.user?.id ?? "0",
+      authorName: "lead-intake",
+      timestamp: formatTimestamp(Date.now()),
+      content: leadSeedTurn(source, threadUrlOf(thread), config),
+    });
+    console.log(
+      `Started lead intake for Discord message ${message.id} in thread ${thread.id}`,
+    );
+  }
+
+  private async postLeadPointer(
+    source: LeadSource,
+    config: LeadIntakeConfig,
+  ): Promise<Message> {
+    const channel = await this.client.channels.fetch(config.channelId);
+    // `isTextBased` alone still includes channel types that cannot be posted to.
+    if (channel === null || !channel.isTextBased() || !("send" in channel)) {
+      throw new Error(
+        `Lead intake channel ${config.channelId} is not a channel Grookie can post in`,
+      );
+    }
+    // Needs View Channel, Send Messages and Create Public Threads in that channel.
+    return channel.send(leadPointer(source, config.emoji));
   }
 
   private async catchUp(): Promise<void> {
@@ -267,7 +402,10 @@ export class DiscordController {
     }
   }
 
-  private async ensureThread(message: Message): Promise<ThreadChannel> {
+  private async ensureThread(
+    message: Message,
+    options?: { name: string; autoArchive: ThreadAutoArchiveDuration },
+  ): Promise<ThreadChannel> {
     if (message.hasThread) {
       const thread =
         message.thread ??
@@ -298,6 +436,14 @@ export class DiscordController {
       throw new Error(
         "Grookie mentions must be sent in a text channel or thread",
       );
+    }
+
+    if (options) {
+      return message.startThread({
+        name: options.name.slice(0, 100),
+        autoArchiveDuration: options.autoArchive,
+        reason: "Lead intake for a flagged message",
+      });
     }
 
     const title = removeGrookieMention(
@@ -500,10 +646,73 @@ async function hasAllowedRole(
   const member =
     message.member ??
     (await message.guild.members.fetch(message.author.id).catch(() => null));
+  return memberHasAllowedRole(member, config);
+}
+
+function memberHasAllowedRole(
+  member: GuildMember | null,
+  config: Config,
+): member is GuildMember {
   return (
     member !== null &&
     member.roles.cache.some((role) => config.allowedRoleIds.has(role.id))
   );
+}
+
+/**
+ * Everything the intake thread needs to know about the flagged message. The reaction
+ * event's message is complete once fetched, so this reads off the object rather than
+ * going back to REST.
+ */
+function leadSourceOf(message: Message, reactorName: string): LeadSource {
+  const channel = message.channel;
+  // A thread's own name is not where a reader would look for the original, so the
+  // seed names the channel it was branched from.
+  const threadParent = channel.isThread() ? channel.parent : null;
+  const channelName = threadParent
+    ? threadParent.name
+    : ("name" in channel ? channel.name : null) ?? channel.id;
+  return {
+    authorName: message.member?.displayName ?? message.author.displayName,
+    timestamp: formatTimestamp(message.createdTimestamp),
+    content: message.content,
+    url: message.url,
+    channelName,
+    reactorNames: [reactorName],
+    // Counted, not read: Grookie has no vision on this box, so the intake is told
+    // there were attachments rather than being shown them.
+    attachmentCount: message.attachments.size,
+  };
+}
+
+/**
+ * Whether the flagged message already lives in the leads channel - including when it
+ * is a message inside a thread branched from it, which is the same conversation.
+ */
+function isInChannel(message: Message, channelId: string): boolean {
+  return (
+    message.channel.id === channelId ||
+    (message.channel.isThread() && message.channel.parentId === channelId)
+  );
+}
+
+/**
+ * A lead intake waits on people who may not look at Discord for days, so it should not
+ * archive on a day's silence. Rather than guess what the guild allows, use the channel's
+ * own default - which is by definition allowed - and fall back to a day.
+ */
+function autoArchiveFor(message: Message): ThreadAutoArchiveDuration {
+  const channel = message.channel;
+  if (channel.isTextBased() && "defaultAutoArchiveDuration" in channel) {
+    const configured = channel.defaultAutoArchiveDuration;
+    if (configured !== null && configured !== undefined) return configured;
+  }
+  return 1440;
+}
+
+/** `ThreadChannel` has no `url` getter, so the jump link is assembled by hand. */
+function threadUrlOf(thread: ThreadChannel): string {
+  return `https://discord.com/channels/${thread.guildId}/${thread.id}`;
 }
 
 async function fetchRecentMessages(

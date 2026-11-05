@@ -67,6 +67,37 @@ Grookie; this controller does not expose it over the network.
 Thread and agent IDs are stored in `state/grookie.json`, which is deliberately gitignored. The
 state file is written with restrictive permissions and atomically replaced after updates.
 
+## Lead intake
+
+Someone who sees a sales signal in any channel reacts with 🤝 to the message. That opens a
+thread in the leads channel and Grookie interviews whoever is reading it - the thread is the
+capture form, and the questions are Grookie's, not a template.
+
+```sh
+GROOKIE_LEAD_CHANNEL_ID=1234567890123456789   # #leads channel id; unset means the trigger is off
+GROOKIE_LEAD_REACTION_EMOJI=🤝                 # what counts as a lead flag
+GROOKIE_LEAD_SCRIPT=                            # defaults to scripts/lead-add.py
+```
+
+Details worth knowing before changing this:
+
+- A Discord thread always branches from a message in its own channel, so a flag raised
+  elsewhere is quoted into the leads channel first and the thread hangs off the quote. Flags
+  raised in the leads channel already get a thread on the spot.
+- Flagging takes a role in `GROOKIE_ALLOWED_ROLE_IDS`, like every other Grookie trigger.
+  Without that, anyone able to react could open threads in the leads channel about anything.
+- Reactions are not caught up after a restart - a flag raised while the bridge was down is
+  dropped, since nothing in the message window records it.
+- One flagged message yields one thread, recorded in `state/grookie.json` permanently rather
+  than in the 10 minute message window: re-reacting must not open a second one.
+
+`scripts/lead-add.py` is what the interview ends with. It queues a lead record
+(`lead-<uuid>.json`) in the n0me inbox - `~/Library/Application Support/n0me/inbox` by
+default - and refuses to queue a contact the CRM already has unless told otherwise. It does
+**not** write the CRM database: n0me's tables are CRDT projections and the running service
+holds the sync engine open, so a row inserted from outside would not replicate. Until n0me
+grows an inbox importer, records queue up here and are not visible in Contacts.
+
 ## Running it
 
 `npm run dev` is for working on the controller. On the Mac Studio both the model

@@ -6,6 +6,13 @@ interface StateFile {
   agentPromptVersion?: number;
   conversations: Record<string, string>;
   processedMessages?: Record<string, number>;
+  /**
+   * Intake threads already started, keyed by the flagged message id. Unlike
+   * `processedMessages` this is never pruned: a second reaction on the same message
+   * must not open a second thread, and the 10 minute message window is far too short
+   * a memory for something a person may re-react to a week later.
+   */
+  leadIntakes?: Record<string, { threadId: string; createdAt: number }>;
 }
 
 export class StateStore {
@@ -64,6 +71,17 @@ export class StateStore {
     (this.state.processedMessages ??= {})[messageId] = timestamp;
   }
 
+  public hasLeadIntake(messageId: string): boolean {
+    return this.state.leadIntakes?.[messageId] !== undefined;
+  }
+
+  public markLeadIntake(messageId: string, threadId: string): void {
+    (this.state.leadIntakes ??= {})[messageId] = {
+      threadId,
+      createdAt: Date.now(),
+    };
+  }
+
   public pruneProcessedMessages(cutoff: number): void {
     if (!this.state.processedMessages) return;
     for (const [messageId, timestamp] of Object.entries(
@@ -110,15 +128,31 @@ function isStateFile(value: unknown): value is StateFile {
   if (!Object.values(record.conversations).every((id) => typeof id === "string")) {
     return false;
   }
-  if (record.processedMessages === undefined) return true;
-  if (
-    typeof record.processedMessages !== "object" ||
-    record.processedMessages === null
-  ) {
+  if (record.processedMessages !== undefined) {
+    if (
+      typeof record.processedMessages !== "object" ||
+      record.processedMessages === null
+    ) {
+      return false;
+    }
+    if (
+      !Object.values(record.processedMessages).every(
+        (timestamp) => typeof timestamp === "number",
+      )
+    ) {
+      return false;
+    }
+  }
+  if (record.leadIntakes === undefined) return true;
+  if (typeof record.leadIntakes !== "object" || record.leadIntakes === null) {
     return false;
   }
-  return Object.values(record.processedMessages).every(
-    (timestamp) => typeof timestamp === "number",
+  return Object.values(record.leadIntakes).every(
+    (intake) =>
+      typeof intake === "object" &&
+      intake !== null &&
+      typeof (intake as { threadId?: unknown }).threadId === "string" &&
+      typeof (intake as { createdAt?: unknown }).createdAt === "number",
   );
 }
 
