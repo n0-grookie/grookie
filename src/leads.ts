@@ -83,6 +83,10 @@ export function leadPointer(source: LeadSource, emoji: string): string {
 /**
  * The seed turn: what Grookie sees as the opening message of the intake thread. It
  * has to carry the whole context by itself, because a new thread starts blank.
+ *
+ * Two questions and no more (okdistribute, 2026-11-06): the company, and whether this
+ * is a feature request. Contact details and deal size are deliberately not asked - an
+ * intake thread in front of colleagues stops being one when it turns into a form.
  */
 export function leadSeedTurn(
   source: LeadSource,
@@ -95,26 +99,29 @@ export function leadSeedTurn(
     "",
     quote(source.content, source.attachmentCount, source.url),
     "",
-    "Someone here will answer - ask in the open, and keep to a group chat's patience:",
-    "two or three questions at a time, and skip whatever the message already answers.",
+    "Someone here will answer. Ask these two, in the open, in one message:",
     "",
-    "The record is a Contact flagged as Lead in the n0me CRM. It needs:",
-    "- the person: name, and however they are reachable (email, Discord, GitHub, LinkedIn, X)",
-    "- the company: name, plus domain if anyone knows one",
-    "- description: who they are, what they want, where this came from - include the original link",
-    "- if a deal or money comes up, write it in the description instead of inventing numbers",
+    "1. what company do they work for? name, description, domain.",
+    "2. should we create a feature request? if yes, which one - run `--features` for the",
+    "   current list. the body is the message text above, verbatim.",
     "",
-    "Open by asking who the lead is and which company they are at.",
-    "Once the name and either a company or a way to reach them are in, record it:",
+    "That is all. Do not ask for contact details or deal size. If a person is needed for",
+    `the record, take ${source.authorName} from the message above and say so.`,
     "",
-    `  python3 ${config.scriptPath} --name '<who>' --company '<company>' \\`,
-    `    --email '<email>' --description '<who they are, what they want>' \\`,
-    `    --source-url ${source.url} --thread-url ${threadUrl}`,
+    "Once the company is in and question two is answered, record it:",
     "",
-    "Add `--help` for the rest of the fields, or `--dry-run` to see the record first.",
-    "If it says the contact already exists, do not force it - say so here and ask whether",
-    "to update that contact instead. If nobody answers after one nudge, stop and say the",
-    "intake was dropped rather than asking again.",
+    `  python3 ${config.scriptPath} --company '<name>' --company-description '<what this is about>' \\`,
+    "    --domain '<domain, if anyone knows one>' --feature '<title from --features>' \\",
+    `    --person-name '${source.authorName.replace(/\n/g, " ")}' \\`,
+    `    --source-url ${source.url} --thread-url ${threadUrl} --body - <<'LEAD'`,
+    ...bodyLines(source.content),
+    "LEAD",
+    "",
+    "Use `--no-feature` instead of `--feature` and `--body` when the answer is that this",
+    "is not a product request. `--dry-run` shows the record without writing it.",
+    "If it says n0me already has that company or contact, do not force it - say so here",
+    "and ask whether to update what is there. If nobody answers after one nudge, stop and",
+    "say the intake was dropped rather than asking again.",
   ].join("\n");
 }
 
@@ -128,6 +135,20 @@ export function leadThreadName(source: LeadSource): string {
     .trimEnd();
   const suffix = source.content.replace(/\s+/g, " ").trim().length > 68 ? "…" : "";
   return `Lead: ${snippet}${suffix}`.slice(0, 100);
+}
+
+/**
+ * The flagged text *is* the feature request body, so the example command carries it
+ * instead of describing it. Long messages are not duplicated a second time into the
+ * seed - they are quoted above already, and a small model copies short things better.
+ */
+function bodyLines(content: string): string[] {
+  const trimmed = content.trim();
+  if (!trimmed || trimmed.length > 400) return ["<paste the quoted message above, verbatim>"];
+  const lines = trimmed.split("\n");
+  // A line equal to the delimiter would end the heredoc early.
+  if (lines.some((line) => line === "LEAD")) return ["<paste the quoted message above, verbatim>"];
+  return lines.map((line) => line || " ");
 }
 
 function quote(content: string, attachmentCount: number, url?: string): string {

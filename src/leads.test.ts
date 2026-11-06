@@ -84,17 +84,45 @@ test("thread names stay titled and inside Discord's limit", () => {
   assert.match(long, /…$/);
 });
 
-test("the seed turn tells Grookie where to record the lead", () => {
+test("the seed turn asks exactly the two questions", () => {
   const seed = leadSeedTurn(
     source(),
     "https://discord.com/channels/949/129/789",
     config,
   );
   assert.match(seed, /lead intake/);
-  assert.match(seed, /Contact flagged as Lead/);
-  assert.match(seed, /python3 \/opt\/grookie\/scripts\/lead-add\.py/);
+  assert.match(seed, /what company do they work for\? name, description, domain/);
+  assert.match(seed, /should we create a feature request\?/);
+  assert.match(seed, /run `--features` for the/);
+  assert.match(seed, /the body is the message text above, verbatim/);
+  // Nothing else gets asked: no contact details, no deal size.
+  assert.match(seed, /Do not ask for contact details or deal size/);
+  assert.doesNotMatch(seed, /who the lead is|email, Discord, GitHub/);
+});
+
+test("the seed turn shows the record command with the body inline", () => {
+  const seed = leadSeedTurn(source(), "https://discord.com/channels/949/129/789", config);
+  assert.match(seed, /python3 \/opt\/grookie\/scripts\/lead-add\.py --company/);
+  assert.match(seed, /--company-description/);
+  assert.match(seed, /--feature '<title from --features>'/);
   assert.match(seed, /--source-url https:\/\/discord\.com\/channels\/949\/129\/456/);
-  assert.match(seed, /--thread-url https:\/\/discord\.com\/channels\/949\/129\/789/);
-  // The interview is the point of the thread, so the instructions to ask have to be in it.
-  assert.match(seed, /who the lead is/);
+  assert.match(seed, /--thread-url https:\/\/discord\.com\/channels\/949\/129\/789 --body - <<'LEAD'/);
+  assert.match(seed, /--no-feature/);
+  // The quoted message is copied in as the body, delimiter at column 0.
+  assert.match(
+    seed,
+    /<<'LEAD'\ncompany X asked about iroh relay quotas\nLEAD\n/,
+  );
+});
+
+test("a long message is not copied into the seed a second time", () => {
+  const seed = leadSeedTurn(
+    source({ content: "a".repeat(9_000) }),
+    "https://discord.com/channels/949/129/789",
+    config,
+  );
+  assert.match(seed, /<paste the quoted message above, verbatim>/);
+  // Quoted once at the top, and not repeated into the command.
+  const body = seed.match(/<<'LEAD'\n([\s\S]*?)\nLEAD/)?.[1];
+  assert.equal(body, "<paste the quoted message above, verbatim>");
 });

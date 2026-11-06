@@ -70,8 +70,9 @@ state file is written with restrictive permissions and atomically replaced after
 ## Lead intake
 
 Someone who sees a sales signal in any channel reacts with 🤝 to the message. That opens a
-thread in the leads channel and Grookie interviews whoever is reading it - the thread is the
-capture form, and the questions are Grookie's, not a template.
+thread in the leads channel and Grookie asks two questions and nothing else: what company
+they work for (name, description, domain), and whether it is a feature request - if so,
+which one, with the flagged message as the body.
 
 ```sh
 GROOKIE_LEAD_CHANNEL_ID=1234567890123456789   # #leads channel id; unset means the trigger is off
@@ -91,12 +92,15 @@ Details worth knowing before changing this:
 - One flagged message yields one thread, recorded in `state/grookie.json` permanently rather
   than in the 10 minute message window: re-reacting must not open a second one.
 
-`scripts/lead-add.py` is what the interview ends with. It queues a lead record
-(`lead-<uuid>.json`) in the n0me inbox - `~/Library/Application Support/n0me/inbox` by
-default - and refuses to queue a contact the CRM already has unless told otherwise. It does
-**not** write the CRM database: n0me's tables are CRDT projections and the running service
-holds the sync engine open, so a row inserted from outside would not replicate. Until n0me
-grows an inbox importer, records queue up here and are not visible in Contacts.
+`scripts/lead-add.py` is what the intake ends with. `--features` lists the product features
+so the second question offers real options; the record itself goes to the n0me inbox
+(`lead-<uuid>.json` in `~/Library/Application Support/n0me/inbox` by default). It refuses to
+queue a company or contact the CRM already has - domains come from `company_identifiers` -
+unless told otherwise, and an answer naming a feature that does not exist yet is kept as
+text rather than dropped. It does **not** write the CRM database: n0me's tables are CRDT
+projections and the running service holds the sync engine open, so a row inserted from
+outside would not replicate. Until n0me grows an inbox importer, records queue up here and
+are not visible in Contacts.
 
 ## Running it
 
