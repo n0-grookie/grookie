@@ -5,3 +5,8 @@ dist/
 !.env.example
 state/
 *.log
+
+# restart.sh snapshots and per-box overrides
+dist.prev*/
+.dist-prev-*/
+deploy/llama.env.local

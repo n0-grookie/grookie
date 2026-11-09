@@ -1,11 +1,22 @@
 import { resolve } from "node:path";
 
+import {
+  DEFAULT_SCRIPT_PATH,
+  normalizeEmoji,
+  type LeadIntakeConfig,
+} from "./leads.js";
+
 export interface Config {
   discordToken: string;
   allowedRoleIds: Set<string>;
   statePath: string;
   model: string;
   reasoningEffort: ReasoningEffort;
+  /**
+   * Undefined unless GROOKIE_LEAD_CHANNEL_ID is set, so the reaction trigger is off
+   * until someone points it at a channel on purpose.
+   */
+  leadIntake?: LeadIntakeConfig;
 }
 
 export type ReasoningEffort = "low" | "medium" | "xhigh";
@@ -46,11 +57,28 @@ function reasoningEffort(): ReasoningEffort {
 }
 
 export function loadConfig(): Config {
+  const leadIntake = leadIntakeConfig();
   return {
     discordToken: required("DISCORD_TOKEN"),
     allowedRoleIds: requiredIdSet("GROOKIE_ALLOWED_ROLE_IDS"),
     statePath: resolve(process.env.GROOKIE_STATE_PATH ?? "state/grookie.json"),
     model: required("GROOKIE_MODEL"),
     reasoningEffort: reasoningEffort(),
+    ...(leadIntake ? { leadIntake } : {}),
   };
 }
+
+/**
+ * Opt-in: no channel id means no reaction handling at all. The emoji is stored
+ * normalized so a client that sends the variation-selector form still matches.
+ */
+function leadIntakeConfig(): LeadIntakeConfig | undefined {
+  const channelId = process.env.GROOKIE_LEAD_CHANNEL_ID?.trim();
+  if (!channelId) return undefined;
+  return {
+    channelId,
+    emoji: normalizeEmoji(process.env.GROOKIE_LEAD_REACTION_EMOJI?.trim() || "🤝"),
+    scriptPath: process.env.GROOKIE_LEAD_SCRIPT?.trim() || DEFAULT_SCRIPT_PATH,
+  };
+}
+

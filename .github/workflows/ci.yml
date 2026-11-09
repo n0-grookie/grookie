@@ -1,0 +1,34 @@
+name: ci
+
+# The gate deploy/restart.sh runs locally, so a broken build is visible before it
+# ever reaches the machine that hosts me.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - name: shell syntax
+        run: |
+          set -e
+          for f in deploy/*.sh; do sh -n "$f"; done
+      - name: plist templates render
+        run: |
+          set -e
+          for f in deploy/launchd/*.plist.in; do
+            out="/tmp/$(basename "$f" .in)"
+            sed -e '/^__USERNAME__$/d' -e 's|__[A-Z_]*__|x|g' "$f" > "$out"
+            python3 -c "import plistlib,sys; plistlib.load(open(sys.argv[1],'rb'))" "$out"
+          done

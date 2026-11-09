@@ -67,6 +67,48 @@ Grookie; this controller does not expose it over the network.
 Thread and agent IDs are stored in `state/grookie.json`, which is deliberately gitignored. The
 state file is written with restrictive permissions and atomically replaced after updates.
 
+## Lead intake
+
+Someone who sees a sales signal in any channel reacts with 🤝 to the message. That opens a
+thread in the leads channel and Grookie asks two questions and nothing else: what company
+they work for (name, description, domain), and whether it is a feature request - if so,
+which one, with the flagged message as the body.
+
+```sh
+GROOKIE_LEAD_CHANNEL_ID=1234567890123456789   # #leads channel id; unset means the trigger is off
+GROOKIE_LEAD_REACTION_EMOJI=🤝                 # what counts as a lead flag
+GROOKIE_LEAD_SCRIPT=                            # defaults to scripts/lead-add.py
+```
+
+Details worth knowing before changing this:
+
+- A Discord thread always branches from a message in its own channel, so a flag raised
+  elsewhere is quoted into the leads channel first and the thread hangs off the quote. Flags
+  raised in the leads channel already get a thread on the spot.
+- Flagging takes a role in `GROOKIE_ALLOWED_ROLE_IDS`, like every other Grookie trigger.
+  Without that, anyone able to react could open threads in the leads channel about anything.
+- Reactions are not caught up after a restart - a flag raised while the bridge was down is
+  dropped, since nothing in the message window records it.
+- One flagged message yields one thread, recorded in `state/grookie.json` permanently rather
+  than in the 10 minute message window: re-reacting must not open a second one.
+
+`scripts/lead-add.py` is what the intake ends with. `--features` lists the product features
+so the second question offers real options; the record itself goes to the n0me inbox
+(`lead-<uuid>.json` in `~/Library/Application Support/n0me/inbox` by default). It refuses to
+queue a company or contact the CRM already has - domains come from `company_identifiers` -
+unless told otherwise, and an answer naming a feature that does not exist yet is kept as
+text rather than dropped. It does **not** write the CRM database: n0me's tables are CRDT
+projections and the running service holds the sync engine open, so a row inserted from
+outside would not replicate. Until n0me grows an inbox importer, records queue up here and
+are not visible in Contacts.
+
+## Running it
+
+`npm run dev` is for working on the controller. On the Mac Studio both the model
+server and the bridge run as launchd jobs so they survive crashes and reboots -
+see [deploy/README.md](deploy/README.md) for install, status, and the
+build-gated restart with rollback.
+
 ## Deferred
 
 Web search/fetch will be added as controller-owned Letta SDK client tools with explicit request
