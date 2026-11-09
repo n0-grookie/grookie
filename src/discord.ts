@@ -10,8 +10,10 @@ import {
   MediaChannel,
   MessageReaction,
   NewsChannel,
+  Partials,
   TextChannel,
   type AnyThreadChannel,
+  type ClientOptions,
   type GuildMember,
   type PartialMessageReaction,
   type PartialUser,
@@ -42,17 +44,27 @@ const DISCORD_MESSAGE_LIMIT = 2_000;
 const MESSAGE_WINDOW_MS = 10 * 60 * 1_000;
 const MESSAGE_PAGE_SIZE = 100;
 
+/**
+ * `partials` is what makes a lead flag on an *old* message arrive at all. discord.js
+ * drops MESSAGE_REACTION_ADD silently when the message is not in its cache and no
+ * Message partial is configured - no event, no error, nothing in the log. Flagging
+ * something from last week is the normal case for a sales signal, so both the message
+ * and the reaction have to be fetchable. `considerReaction` fetches whatever is partial.
+ */
+export const CLIENT_OPTIONS: ClientOptions = {
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+    // Only needed for the lead-flag reaction; it is not a privileged intent, and
+    // the event carries no message content, so the message is fetched by id.
+    GatewayIntentBits.GuildMessageReactions,
+  ],
+  partials: [Partials.Message, Partials.Reaction, Partials.User],
+};
+
 export class DiscordController {
-  private readonly client = new Client({
-    intents: [
-      GatewayIntentBits.Guilds,
-      GatewayIntentBits.GuildMessages,
-      GatewayIntentBits.MessageContent,
-      // Only needed for the lead-flag reaction; it is not a privileged intent, and
-      // the event carries no message content, so the message is fetched by id.
-      GatewayIntentBits.GuildMessageReactions,
-    ],
-  });
+  private readonly client = new Client(CLIENT_OPTIONS);
   private readonly processingMessageIds = new Set<string>();
   private readonly inaccessibleCatchUpChannels = new Set<string>();
   /**

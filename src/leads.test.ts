@@ -126,3 +126,15 @@ test("a long message is not copied into the seed a second time", () => {
   const body = seed.match(/<<'LEAD'\n([\s\S]*?)\nLEAD/)?.[1];
   assert.equal(body, "<paste the quoted message above, verbatim>");
 });
+
+// discord.js drops MESSAGE_REACTION_ADD without a trace when the message is not cached
+// and no Message partial is configured, so a flag on an old message would look like the
+// feature simply never fires. Cheapest place to catch that is the client options.
+test("the client subscribes to reactions in a way that can deliver old messages", async () => {
+  const { GatewayIntentBits, Partials } = await import("discord.js");
+  const { CLIENT_OPTIONS } = await import("./discord.js");
+  const { intents, partials } = CLIENT_OPTIONS;
+  assert.ok(Array.isArray(intents) && intents.includes(GatewayIntentBits.GuildMessageReactions));
+  assert.ok(Array.isArray(partials) && partials.includes(Partials.Message));
+  assert.ok(Array.isArray(partials) && partials.includes(Partials.Reaction));
+});
